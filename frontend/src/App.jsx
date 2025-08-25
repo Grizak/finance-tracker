@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import React, { useState, useEffect } from "react";
 import {
   PlusCircle,
@@ -45,13 +46,15 @@ const FinanceTracker = () => {
 
   useEffect(() => {
     loadInitialData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (storageMode === "local" && transactions.length > 0) {
-      saveToLocalStorage();
+    if (user) {
+      loadFromCloud();
     }
-  }, [transactions, storageMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const loadInitialData = async () => {
     try {
@@ -61,7 +64,6 @@ const FinanceTracker = () => {
           const userData = JSON.parse(savedUser);
           setUser(userData);
           setStorageMode("cloud");
-          await loadFromCloud();
           return;
         }
       }
@@ -184,7 +186,7 @@ const FinanceTracker = () => {
         setShowAuth(false);
         setEmail("");
         setPassword("");
-        await loadFromCloud();
+        await loadFromCloud(); // Always load from cloud after login/register
       } else {
         alert("Authentication failed");
       }
@@ -385,6 +387,11 @@ const FinanceTracker = () => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      handleAuth();
+                    }
+                  }}
                 />
                 <input
                   type="password"
@@ -392,6 +399,11 @@ const FinanceTracker = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      handleAuth();
+                    }
+                  }}
                 />
 
                 <button
