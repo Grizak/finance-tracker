@@ -1,8 +1,8 @@
 const express = require("express");
-const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
+const fs = require("fs");
 require("dotenv").config();
 
 const app = express();
@@ -11,19 +11,14 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
 app.use(express.json());
 
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path}`);
   next();
 });
+
+app.use(express.static("public"));
 
 // MongoDB connection
 mongoose
@@ -511,7 +506,12 @@ app.use((error, req, res, next) => {
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found", code: 404 });
+  try {
+    fs.accessSync("public/index.html", fs.constants.R_OK);
+    res.sendFile("public/index.html");
+  } catch {
+    res.redirect(`http://localhost:5173${req.originalUrl}`);
+  }
 });
 
 // Graceful shutdown
