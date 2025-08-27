@@ -279,13 +279,12 @@ const FinanceTracker = () => {
       date: new Date().toISOString(),
     };
 
-    const updatedTransactions = [newTransaction, ...transactions];
-    setTransactions(updatedTransactions);
-
     if (storageMode === "cloud" && user) {
       await saveToCloud(updatedTransactions);
     } else if (storageMode === "local") {
       saveToLocalStorage();
+      const updatedTransactions = [newTransaction, ...transactions];
+      setTransactions(updatedTransactions);
     }
 
     setDescription("");
