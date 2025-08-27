@@ -227,7 +227,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Get user transactions
+// Get user transactions - FIXED: Don't parseInt the transactionId since it's a UUID
 app.get("/api/transactions", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -241,9 +241,9 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
       .limit(limit)
       .lean();
 
-    // Convert to frontend format
+    // Convert to frontend format - FIXED: Keep transactionId as string (UUID)
     const formattedTransactions = transactions.map((transaction) => ({
-      id: parseInt(transaction.transactionId),
+      id: transaction.transactionId, // Don't parseInt - keep as UUID string
       description: transaction.description,
       amount: transaction.amount,
       type: transaction.type,
@@ -258,36 +258,60 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
   }
 });
 
-// Save user transactions (replace all)
+// Save user transactions - FIXED: Better validation and error logging
 app.post("/api/transactions", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { transactions } = req.body;
 
+    console.log("Received transactions data:", JSON.stringify({ 
+      userId, 
+      transactionCount: transactions?.length,
+      sampleTransaction: transactions?.[0] 
+    }, null, 2));
+
     if (!Array.isArray(transactions)) {
+      console.log("Validation failed: transactions is not an array");
       return res.status(400).json({ error: "Transactions must be an array" });
     }
 
-    // Validate transactions
-    for (const transaction of transactions) {
-      if (
-        !transaction.id ||
-        !transaction.description ||
-        !transaction.amount ||
-        !transaction.type ||
-        !transaction.category ||
-        !transaction.date
-      ) {
-        return res
-          .status(400)
-          .json({ error: "All transaction fields are required" });
+    // Validate transactions - FIXED: Better validation with detailed logging
+    for (let i = 0; i < transactions.length; i++) {
+      const transaction = transactions[i];
+      console.log(`Validating transaction ${i}:`, transaction);
+      
+      // Check each required field individually for better error messages
+      if (!transaction.id) {
+        console.log(`Validation failed at transaction ${i}: missing id`);
+        return res.status(400).json({ error: `Transaction ${i}: id is required` });
+      }
+      if (!transaction.description) {
+        console.log(`Validation failed at transaction ${i}: missing description`);
+        return res.status(400).json({ error: `Transaction ${i}: description is required` });
+      }
+      if (transaction.amount === undefined || transaction.amount === null) {
+        console.log(`Validation failed at transaction ${i}: missing amount`);
+        return res.status(400).json({ error: `Transaction ${i}: amount is required` });
+      }
+      if (!transaction.type) {
+        console.log(`Validation failed at transaction ${i}: missing type`);
+        return res.status(400).json({ error: `Transaction ${i}: type is required` });
+      }
+      if (!transaction.category) {
+        console.log(`Validation failed at transaction ${i}: missing category`);
+        return res.status(400).json({ error: `Transaction ${i}: category is required` });
+      }
+      if (!transaction.date) {
+        console.log(`Validation failed at transaction ${i}: missing date`);
+        return res.status(400).json({ error: `Transaction ${i}: date is required` });
       }
       if (!["income", "expense"].includes(transaction.type)) {
-        return res
-          .status(400)
-          .json({ error: "Transaction type must be income or expense" });
+        console.log(`Validation failed at transaction ${i}: invalid type "${transaction.type}"`);
+        return res.status(400).json({ error: `Transaction ${i}: type must be income or expense` });
       }
     }
+
+    console.log("All transactions validated successfully");
 
     // Use MongoDB session for transaction
     const session = await mongoose.startSession();
@@ -299,7 +323,7 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
       if (transactions.length > 0) {
         const transactionDocs = transactions.map((transaction) => ({
           userId,
-          transactionId: transaction.id.toString(),
+          transactionId: transaction.id.toString(), // Keep as string (UUID)
           description: transaction.description,
           amount: transaction.amount,
           type: transaction.type,
@@ -308,6 +332,7 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
         }));
 
         await Transaction.insertMany(transactionDocs, { session });
+        console.log(`Successfully inserted ${transactionDocs.length} transactions`);
       }
     });
 
@@ -319,6 +344,7 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating transactions:", error);
+    console.error("Error stack:", error.stack);
     if (error.code === 11000) {
       return res.status(400).json({ error: "Duplicate transaction ID found" });
     }
