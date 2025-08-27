@@ -1,5 +1,11 @@
 const CACHE_NAME = "Finance-Tracker-Offline-Cache-v1";
-const URLS_TO_CACHE = ["/index.html", "/favicon.png", "/manifest.json"];
+const URLS_TO_CACHE = [
+  "/index.html",
+  "/favicon.png",
+  "/manifest.json",
+  "/app.js",
+  "/style.css",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
