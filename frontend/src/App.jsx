@@ -59,21 +59,50 @@ const FinanceTracker = () => {
   // Set up SSE
   useEffect(() => {
     if (!user) return;
-
-    const eventSource = new EventSource(`${API_BASE}/sse/${user.userId}`);
-
-    eventSource.onmessage = (event) => {
-      if (event.data.split(" ")[2] === user.userId) {
+  
+    // Try SSE first, fall back to polling if it fails
+    let eventSource;
+    let pollingInterval;
+    let sseFailCount = 0;
+    
+    const startPolling = () => {
+      console.log('Starting polling fallback...');
+      pollingInterval = setInterval(() => {
         loadFromCloud();
-      } else {
+      }, 10000); // Poll every 10 seconds
+    };
+    
+    const connectSSE = () => {
+      eventSource = new EventSource(`${API_BASE}/sse/${user.userId}`);
+      
+      eventSource.onmessage = (event) => {
+        sseFailCount = 0; // Reset fail count on successful message
+        if (event.data.includes(user.userId)) {
+          loadFromCloud();
+        }
+      };
+  
+      eventSource.onerror = (error) => {
+        console.error('SSE error:', error);
         eventSource.close();
-      }
+        sseFailCount++;
+        
+        // If SSE fails multiple times, switch to polling
+        if (sseFailCount >= 3) {
+          console.log('SSE failed multiple times, switching to polling');
+          startPolling();
+        } else {
+          setTimeout(connectSSE, 5000);
+        }
+      };
     };
-
+  
+    connectSSE();
+  
     return () => {
-      eventSource.close();
+      if (eventSource) eventSource.close();
+      if (pollingInterval) clearInterval(pollingInterval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const loadInitialData = async () => {
