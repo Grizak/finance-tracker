@@ -15,6 +15,7 @@ export default defineConfig({
         if (fs.existsSync(swFile)) {
           const { code } = await minify(fs.readFileSync(swFile, "utf8"));
           fs.writeFileSync(swFile, code, "utf8");
+          console.log("✅ Minified sw.js");
         }
 
         const manifestFile = "../server/dist/manifest.json";
@@ -24,6 +25,7 @@ export default defineConfig({
             JSON.stringify(JSON.parse(fs.readFileSync(manifestFile, "utf8"))),
             "utf8"
           );
+          console.log("✅ Minified manifest.json");
         }
       },
     },
