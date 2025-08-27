@@ -1,17 +1,71 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import fs from "fs";
+import { minify } from "terser";
+import htmlMinifier from "html-minifier-terser";
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: "minify-sw-and-manifest",
+      closeBundle: async () => {
+        const swFile = "../server/dist/sw.js";
+        if (fs.existsSync(swFile)) {
+          const { code } = await minify(fs.readFileSync(swFile, "utf8"));
+          fs.writeFileSync(swFile, code, "utf8");
+        }
+
+        const manifestFile = "../server/dist/manifest.json";
+        if (fs.existsSync(manifestFile)) {
+          fs.writeFileSync(
+            manifestFile,
+            JSON.stringify(JSON.parse(fs.readFileSync(manifestFile, "utf8"))),
+            "utf8"
+          );
+        }
+      },
+    },
+    {
+      name: "minify-index-html",
+      closeBundle: async () => {
+        const file = "../server/dist/index.html";
+        if (fs.existsSync(file)) {
+          const html = fs.readFileSync(file, "utf8");
+          const minified = await htmlMinifier.minify(html, {
+            collapseWhitespace: true,
+            removeComments: true,
+            removeRedundantAttributes: true,
+            useShortDoctype: true,
+          });
+          fs.writeFileSync(file, minified, "utf8");
+          console.log("✅ Minified index.html");
+        }
+      },
+    },
+  ],
   build: {
-    outDir: "../server/public",
+    outDir: "../server/dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: "app.js", // fixed main entry
+        chunkFileNames: "chunks/[name].js", // optional for split chunks
+        assetFileNames: (assetInfo) => {
+          if (assetInfo.name && assetInfo.name.endsWith(".css")) {
+            return "style.css"; // fixed CSS name
+          }
+          return "assets/[name].[ext]";
+        },
+      },
+    },
+    minify: "terser",
   },
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: "http://127.0.0.1:3000",
         changeOrigin: true,
       },
     },

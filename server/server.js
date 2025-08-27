@@ -18,10 +18,15 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static("public"));
+app.use(express.static("dist"));
 
 app.get("/favicon.ico", (req, res) => {
-  res.sendFile("/public/favicon.png")
+  res.sendFile("/dist/favicon.png");
+});
+
+app.use((req, res, next) => {
+  res.removeHeader("X-Powered-By");
+  next();
 });
 
 // MongoDB connection
@@ -98,6 +103,7 @@ const transactionSchema = new mongoose.Schema(
 
 // Compound index for user transactions
 transactionSchema.index({ userId: 1, transactionId: 1 }, { unique: true });
+transactionSchema.index({ userId: 1, createdAt: -1 });
 
 // Models
 const User = mongoose.model("User", userSchema);
@@ -105,6 +111,7 @@ const Transaction = mongoose.model("Transaction", transactionSchema);
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
+  console.log("Started JWT authentication");
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
 
@@ -117,6 +124,7 @@ const authenticateToken = (req, res, next) => {
       return res.status(403).json({ error: "Invalid or expired token" });
     }
     req.user = user;
+    console.log("JWT authentication finished");
     next();
   });
 };
@@ -243,7 +251,8 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean();
+      .lean()
+      .maxTimeMS(4000);
 
     // Convert to frontend format - FIXED: Keep transactionId as string (UUID)
     const formattedTransactions = transactions.map((transaction) => ({
@@ -257,6 +266,9 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
 
     res.json({ transactions: formattedTransactions });
   } catch (error) {
+    if (error.name === "MongoServerError" && error.code === 50) {
+      return res.status(408).json({ error: "Query timeout" });
+    }
     console.error("Error fetching transactions:", error);
     res.status(500).json({ error: "Failed to fetch transactions" });
   }
@@ -268,11 +280,18 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const { transactions } = req.body;
 
-    console.log("Received transactions data:", JSON.stringify({ 
-      userId, 
-      transactionCount: transactions?.length,
-      sampleTransaction: transactions?.[0] 
-    }, null, 2));
+    console.log(
+      "Received transactions data:",
+      JSON.stringify(
+        {
+          userId,
+          transactionCount: transactions?.length,
+          sampleTransaction: transactions?.[0],
+        },
+        null,
+        2
+      )
+    );
 
     if (!Array.isArray(transactions)) {
       console.log("Validation failed: transactions is not an array");
@@ -283,35 +302,53 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
     for (let i = 0; i < transactions.length; i++) {
       const transaction = transactions[i];
       console.log(`Validating transaction ${i}:`, transaction);
-      
+
       // Check each required field individually for better error messages
       if (!transaction.id) {
         console.log(`Validation failed at transaction ${i}: missing id`);
-        return res.status(400).json({ error: `Transaction ${i}: id is required` });
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: id is required` });
       }
       if (!transaction.description) {
-        console.log(`Validation failed at transaction ${i}: missing description`);
-        return res.status(400).json({ error: `Transaction ${i}: description is required` });
+        console.log(
+          `Validation failed at transaction ${i}: missing description`
+        );
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: description is required` });
       }
       if (transaction.amount === undefined || transaction.amount === null) {
         console.log(`Validation failed at transaction ${i}: missing amount`);
-        return res.status(400).json({ error: `Transaction ${i}: amount is required` });
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: amount is required` });
       }
       if (!transaction.type) {
         console.log(`Validation failed at transaction ${i}: missing type`);
-        return res.status(400).json({ error: `Transaction ${i}: type is required` });
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: type is required` });
       }
       if (!transaction.category) {
         console.log(`Validation failed at transaction ${i}: missing category`);
-        return res.status(400).json({ error: `Transaction ${i}: category is required` });
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: category is required` });
       }
       if (!transaction.date) {
         console.log(`Validation failed at transaction ${i}: missing date`);
-        return res.status(400).json({ error: `Transaction ${i}: date is required` });
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: date is required` });
       }
       if (!["income", "expense"].includes(transaction.type)) {
-        console.log(`Validation failed at transaction ${i}: invalid type "${transaction.type}"`);
-        return res.status(400).json({ error: `Transaction ${i}: type must be income or expense` });
+        console.log(
+          `Validation failed at transaction ${i}: invalid type "${transaction.type}"`
+        );
+        return res
+          .status(400)
+          .json({ error: `Transaction ${i}: type must be income or expense` });
       }
     }
 
@@ -336,7 +373,9 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
         }));
 
         await Transaction.insertMany(transactionDocs, { session });
-        console.log(`Successfully inserted ${transactionDocs.length} transactions`);
+        console.log(
+          `Successfully inserted ${transactionDocs.length} transactions`
+        );
       }
     });
 
@@ -528,6 +567,34 @@ app.get(
   }
 );
 
+// Use SSE
+app.get("/api/sse/:userId", (req, res) => {
+  // Set headers for SSE
+  res.setHeaders(
+    new Headers({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    })
+  );
+
+  // Send SSE events whenever the transactions change
+  const userId = req.params.userId;
+
+  const changeStream = Transaction.watch([
+    { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+  ]);
+
+  changeStream.on("change", () => {
+    res.write(`data: transactions for ${userId} changes\n\n`);
+  });
+
+  // Close the connection when the client disconnects
+  req.on("close", () => {
+    changeStream.close();
+  });
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error("Unhandled error:", error);
@@ -537,8 +604,8 @@ app.use((error, req, res, next) => {
 // 404 handler
 app.use((req, res) => {
   try {
-    fs.accessSync("public/index.html", fs.constants.R_OK);
-    res.sendFile("public/index.html");
+    fs.accessSync("dist/index.html", fs.constants.R_OK);
+    res.sendFile("dist/index.html");
   } catch {
     res.redirect(`http://localhost:5173${req.originalUrl}`);
   }

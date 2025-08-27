@@ -56,6 +56,26 @@ const FinanceTracker = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // Set up SSE
+  useEffect(() => {
+    if (!user) return;
+
+    const eventSource = new EventSource(`${API_BASE}/sse/${user.userId}`);
+
+    eventSource.onmessage = (event) => {
+      if (event.data.split(" ")[2] === user.userId) {
+        loadFromCloud();
+      } else {
+        eventSource.close();
+      }
+    };
+
+    return () => {
+      eventSource.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
   const loadInitialData = async () => {
     try {
       if (typeof Storage !== "undefined") {
@@ -493,7 +513,15 @@ const FinanceTracker = () => {
         </div>
 
         {/* Add Transaction Form */}
-        <div className="bg-gray-50 p-6 rounded-lg mb-6">
+        <div
+          className="bg-gray-50 p-6 rounded-lg mb-6"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addTransaction();
+            }
+          }}
+        >
           <h2 className="text-xl font-semibold mb-4">Add New Transaction</h2>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
