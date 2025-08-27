@@ -20,6 +20,10 @@ app.use((req, res, next) => {
 
 app.use(express.static("public"));
 
+app.get("/favicon.ico", (req, res) => {
+  res.sendFile("/public/favicon.png")
+});
+
 // MongoDB connection
 mongoose
   .connect(MONGODB_URI)
