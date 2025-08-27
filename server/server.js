@@ -570,13 +570,11 @@ app.get(
 // Use SSE
 app.get("/api/sse/:userId", (req, res) => {
   // Set headers for SSE
-  res.setHeaders(
-    new Headers({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    })
-  );
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  });
 
   // Send SSE events whenever the transactions change
   const userId = req.params.userId;
