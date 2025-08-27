@@ -569,28 +569,60 @@ app.get(
 
 // Use SSE
 app.get("/api/sse/:userId", (req, res) => {
-  // Set headers for SSE
-  res.set({
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
+  console.log(`SSE connection established for user: ${req.params.userId}`);
+  
+  // FIXED: Use res.setHeader (singular) instead of res.setHeaders
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
 
-  // Send SSE events whenever the transactions change
   const userId = req.params.userId;
 
-  const changeStream = Transaction.watch([
-    { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-  ]);
+  // FIXED: Add ObjectId validation
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    res.status(400).write('data: {"error": "Invalid user ID"}\n\n');
+    res.end();
+    return;
+  }
 
-  changeStream.on("change", () => {
-    res.write(`data: transactions for ${userId} changes\n\n`);
-  });
+  // Send initial connection confirmation
+  res.write('data: SSE connection established\n\n');
 
-  // Close the connection when the client disconnects
-  req.on("close", () => {
-    changeStream.close();
-  });
+  try {
+    // FIXED: Use proper ObjectId constructor
+    const changeStream = Transaction.watch([
+      { $match: { "fullDocument.userId": new mongoose.Types.ObjectId(userId) } }
+    ]);
+
+    changeStream.on('change', (change) => {
+      console.log('Transaction change detected:', change.operationType);
+      // FIXED: Send proper SSE format with more specific data
+      res.write(`data: transactions updated for ${userId}\n\n`);
+    });
+
+    changeStream.on('error', (error) => {
+      console.error('Change stream error:', error);
+      res.write(`data: {"error": "Change stream error"}\n\n`);
+    });
+
+    // FIXED: Handle connection close properly
+    req.on('close', () => {
+      console.log(`SSE connection closed for user: ${userId}`);
+      changeStream.close();
+    });
+
+    req.on('error', (error) => {
+      console.error('SSE request error:', error);
+      changeStream.close();
+    });
+
+  } catch (error) {
+    console.error('SSE setup error:', error);
+    res.status(500).write(`data: {"error": "SSE setup failed"}\n\n`);
+    res.end();
+  }
 });
 
 // Error handling middleware
