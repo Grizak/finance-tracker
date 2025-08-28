@@ -13,6 +13,276 @@ import {
   HardDrive,
 } from "lucide-react";
 
+// Add to App.jsx
+const RecurringTransactionForm = ({ onAdd, onCancel }) => {
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [type, setType] = useState("expense");
+  const [category, setCategory] = useState("");
+  const [frequency, setFrequency] = useState("monthly");
+  const [startDate, setStartDate] = useState(
+    new Date().toISOString().split("T")[0]
+  );
+  const [endDate, setEndDate] = useState("");
+  const [hasEndDate, setHasEndDate] = useState(false);
+
+  const frequencies = [
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "monthly", label: "Monthly" },
+    { value: "yearly", label: "Yearly" },
+  ];
+
+  const handleSubmit = () => {
+    if (!description || !amount || !category) return;
+
+    const recurringTransaction = {
+      description,
+      amount: parseFloat(amount),
+      type,
+      category,
+      frequency,
+      startDate,
+      endDate: hasEndDate ? endDate : null,
+    };
+
+    onAdd(recurringTransaction);
+  };
+
+  return (
+    <div className="bg-gray-50 p-6 rounded-lg mb-6">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-semibold">Add Recurring Transaction</h2>
+        <button
+          onClick={onCancel}
+          className="text-gray-500 hover:text-gray-700"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Type
+          </label>
+          <select
+            value={type}
+            onChange={(e) => {
+              setType(e.target.value);
+              setCategory("");
+            }}
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="income">Income</option>
+            <option value="expense">Expense</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Category
+          </label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="">Select Category</option>
+            {categories[type].map((cat) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Description
+          </label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="e.g., Netflix Subscription"
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Amount
+          </label>
+          <input
+            type="number"
+            step="0.01"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0.00"
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Frequency
+          </label>
+          <select
+            value={frequency}
+            onChange={(e) => setFrequency(e.target.value)}
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            {frequencies.map((freq) => (
+              <option key={freq.value} value={freq.value}>
+                {freq.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Start Date
+          </label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="flex items-center">
+          <input
+            type="checkbox"
+            checked={hasEndDate}
+            onChange={(e) => setHasEndDate(e.target.checked)}
+            className="mr-2"
+          />
+          <span className="text-sm font-medium text-gray-700">
+            Set end date
+          </span>
+        </label>
+
+        {hasEndDate && (
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            className="mt-2 w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        )}
+      </div>
+
+      <button
+        onClick={handleSubmit}
+        className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition duration-200 flex items-center"
+      >
+        <PlusCircle className="w-4 h-4 mr-2" />
+        Add Recurring Transaction
+      </button>
+    </div>
+  );
+};
+
+// Add to App.jsx
+const RecurringTransactionsList = ({
+  recurringTransactions,
+  onEdit,
+  onDelete,
+}) => {
+  const formatFrequency = (frequency) => {
+    const frequencyMap = {
+      daily: "Daily",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      yearly: "Yearly",
+    };
+    return frequencyMap[frequency] || frequency;
+  };
+
+  const formatNextDue = (nextDueDate) => {
+    const date = new Date(nextDueDate);
+    const today = new Date();
+    const diffTime = date - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) return "Overdue";
+    if (diffDays === 0) return "Due today";
+    if (diffDays === 1) return "Due tomorrow";
+    return `Due in ${diffDays} days`;
+  };
+
+  return (
+    <div className="bg-white rounded-lg p-6 mb-6">
+      <h2 className="text-xl font-semibold mb-4">Recurring Transactions</h2>
+
+      {recurringTransactions.length === 0 ? (
+        <div className="text-center py-8 text-gray-500">
+          <p>No recurring transactions set up yet.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {recurringTransactions.map((recurring) => (
+            <div
+              key={recurring.recurringId}
+              className={`flex items-center justify-between p-4 rounded-lg border-l-4 ${
+                recurring.type === "income"
+                  ? "bg-green-50 border-green-400"
+                  : "bg-red-50 border-red-400"
+              }`}
+            >
+              <div className="flex items-center">
+                {recurring.type === "income" ? (
+                  <PlusCircle className="w-5 h-5 text-green-600 mr-3" />
+                ) : (
+                  <MinusCircle className="w-5 h-5 text-red-600 mr-3" />
+                )}
+                <div>
+                  <p className="font-medium text-gray-800">
+                    {recurring.description}
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    {recurring.category} •{" "}
+                    {formatFrequency(recurring.frequency)} •{" "}
+                    {formatNextDue(recurring.nextDueDate)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center">
+                <span
+                  className={`font-semibold mr-4 ${
+                    recurring.type === "income"
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }`}
+                >
+                  {recurring.type === "income" ? "+" : "-"}
+                  {formatCurrency(recurring.amount)}
+                </span>
+                <button
+                  onClick={() => onDelete(recurring.recurringId)}
+                  className="text-gray-400 hover:text-red-500 transition duration-200"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const FinanceTracker = () => {
   const [transactions, setTransactions] = useState([]);
   const [description, setDescription] = useState("");
@@ -27,6 +297,8 @@ const FinanceTracker = () => {
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(false);
   const [storageMode, setStorageMode] = useState("memory"); // 'memory', 'local', 'cloud'
+  const [recurringTransactions, setRecurringTransactions] = useState([]);
+  const [showRecurringForm, setShowRecurringForm] = useState(false);
 
   const categories = {
     income: ["Salary", "Freelance", "Investment", "Gift", "Other"],
@@ -52,6 +324,7 @@ const FinanceTracker = () => {
   useEffect(() => {
     if (user) {
       loadFromCloud();
+      loadRecurringTransactions();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -59,46 +332,46 @@ const FinanceTracker = () => {
   // Set up SSE
   useEffect(() => {
     if (!user) return;
-  
+
     // Try SSE first, fall back to polling if it fails
     let eventSource;
     let pollingInterval;
     let sseFailCount = 0;
-    
+
     const startPolling = () => {
-      console.log('Starting polling fallback...');
+      console.log("Starting polling fallback...");
       pollingInterval = setInterval(() => {
         loadFromCloud();
       }, 10000); // Poll every 10 seconds
     };
-    
+
     const connectSSE = () => {
       eventSource = new EventSource(`${API_BASE}/sse/${user.userId}`);
-      
+
       eventSource.onmessage = (event) => {
         sseFailCount = 0; // Reset fail count on successful message
         if (event.data.includes(user.userId)) {
           loadFromCloud();
         }
       };
-  
+
       eventSource.onerror = (error) => {
-        console.error('SSE error:', error);
+        console.error("SSE error:", error);
         eventSource.close();
         sseFailCount++;
-        
+
         // If SSE fails multiple times, switch to polling
         if (sseFailCount >= 3) {
-          console.log('SSE failed multiple times, switching to polling');
+          console.log("SSE failed multiple times, switching to polling");
           startPolling();
         } else {
           setTimeout(connectSSE, 5000);
         }
       };
     };
-  
+
     connectSSE();
-  
+
     return () => {
       if (eventSource) eventSource.close();
       if (pollingInterval) clearInterval(pollingInterval);
@@ -124,6 +397,73 @@ const FinanceTracker = () => {
       setStorageMode("local");
     } else {
       setStorageMode("memory");
+    }
+  };
+
+  const loadRecurringTransactions = async () => {
+    if (!user) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/recurring-transactions`, {
+        headers: {
+          Authorization: `Bearer ${user.token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setRecurringTransactions(data.recurringTransactions || []);
+      }
+    } catch (error) {
+      console.error("Failed to load recurring transactions:", error);
+    }
+  };
+
+  const addRecurringTransaction = async (recurringData) => {
+    if (!user) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/recurring-transactions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${user.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(recurringData),
+      });
+
+      if (response.ok) {
+        await loadRecurringTransactions();
+        setShowRecurringForm(false);
+      } else {
+        alert("Failed to add recurring transaction");
+      }
+    } catch (error) {
+      console.error("Error adding recurring transaction:", error);
+      alert("Error adding recurring transaction");
+    }
+  };
+
+  const deleteRecurringTransaction = async (recurringId) => {
+    if (!user) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/recurring-transactions/${recurringId}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${user.token}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        await loadRecurringTransactions();
+      }
+    } catch (error) {
+      console.error("Error deleting recurring transaction:", error);
     }
   };
 
@@ -383,7 +723,6 @@ const FinanceTracker = () => {
             )}
           </div>
         </div>
-
         {/* Storage Options */}
         {!user && (
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
@@ -411,7 +750,6 @@ const FinanceTracker = () => {
             </div>
           </div>
         )}
-
         {/* Auth Modal */}
         {showAuth && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -480,7 +818,6 @@ const FinanceTracker = () => {
             </div>
           </div>
         )}
-
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <div className="bg-green-100 p-4 rounded-lg border-l-4 border-green-500">
@@ -540,6 +877,13 @@ const FinanceTracker = () => {
           </div>
         </div>
 
+        <button
+          onClick={() => setShowRecurringForm(!showRecurringForm)}
+          className="bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-6 rounded-lg transition duration-200 flex items-center mb-4"
+        >
+          <PlusCircle className="w-4 h-4 mr-2" />
+          {showRecurringForm ? "Cancel" : "Add Recurring Transaction"}
+        </button>
         {/* Add Transaction Form */}
         <div
           className="bg-gray-50 p-6 rounded-lg mb-6"
@@ -628,6 +972,13 @@ const FinanceTracker = () => {
           </button>
         </div>
 
+        {showRecurringForm && (
+          <RecurringTransactionForm
+            onAdd={addRecurringTransaction}
+            onCancel={() => setShowRecurringForm(false)}
+          />
+        )}
+
         {/* Transaction List */}
         <div className="bg-white rounded-lg">
           <h2 className="text-xl font-semibold mb-4">Recent Transactions</h2>
@@ -692,6 +1043,10 @@ const FinanceTracker = () => {
               ))}
             </div>
           )}
+          <RecurringTransactionsList
+            recurringTransactions={recurringTransactions}
+            onDelete={deleteRecurringTransaction}
+          />
         </div>
       </div>
     </div>
