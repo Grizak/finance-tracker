@@ -6,7 +6,9 @@
     "postinstall": "concurrently \"cd server && pnpm i\" \"cd frontend && pnpm i\"",
     "dev": "concurrently \"cd server && pnpm dev\" \"cd frontend && pnpm dev\"",
     "start": "cd server && pnpm start",
-    "build": "cd frontend && pnpm build"
+    "build:frontend": "cd frontend && pnpm build",
+    "build": "pnpm build:frontend",
+    "build:backend": "cd server && pnpm build"
   },
   "packageManager": "pnpm@10.15.0"
 }

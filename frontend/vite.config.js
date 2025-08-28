@@ -10,37 +10,37 @@ export default defineConfig({
   plugins: [
     react(),
     {
-      name: 'file-hash',
+      name: "file-hash",
       generateBundle(outputOptions, bundle) {
-        Object.keys(bundle).forEach(fileName => {
+        Object.keys(bundle).forEach((fileName) => {
           const chunk = bundle[fileName];
-          
+
           // Only process chunks (JS/CSS files)
-          if (chunk.type !== 'chunk') return;
-          
+          if (chunk.type !== "chunk") return;
+
           // Generate SHA256 hash of the content
-          const hash = createHash('sha256')
+          const hash = createHash("sha256")
             .update(chunk.code)
-            .digest('hex')
+            .digest("hex")
             .substring(0, 16); // Use first 16 chars for readability
-          
+
           // Prepend hash comment to the file
           const hashComment = `/* HASH:${hash} */\n`;
           chunk.code = hashComment + chunk.code;
         });
-      }
+      },
     },
     {
       name: "minify-sw-and-manifest",
       closeBundle: async () => {
-        const swFile = "dist/sw.js";
+        const swFile = "../server/dist/sw.js";
         if (fs.existsSync(swFile)) {
           const { code } = await minify(fs.readFileSync(swFile, "utf8"));
           fs.writeFileSync(swFile, code, "utf8");
           console.log("✅ Minified sw.js");
         }
 
-        const manifestFile = "dist/manifest.json";
+        const manifestFile = "../server/dist/manifest.json";
         if (fs.existsSync(manifestFile)) {
           fs.writeFileSync(
             manifestFile,
@@ -54,7 +54,7 @@ export default defineConfig({
     {
       name: "minify-index-html",
       closeBundle: async () => {
-        const file = "dist/index.html";
+        const file = "../server/dist/index.html";
         if (fs.existsSync(file)) {
           const html = fs.readFileSync(file, "utf8");
           const minified = await htmlMinifier.minify(html, {
@@ -70,7 +70,7 @@ export default defineConfig({
     },
   ],
   build: {
-    outDir: "dist",
+    outDir: "../server/dist",
     emptyOutDir: true,
     rollupOptions: {
       output: {
