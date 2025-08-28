@@ -4,11 +4,109 @@ const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const fs = require("fs");
 require("dotenv").config();
+const Agenda = require("agenda");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MONGODB_URI = process.env.MONGODB_URI;
+
+// Utility functions for recurring transactions
+function calculateNextDueDate(currentDate, frequency) {
+  const nextDate = new Date(currentDate);
+
+  switch (frequency) {
+    case "daily":
+      nextDate.setDate(nextDate.getDate() + 1);
+      break;
+    case "weekly":
+      nextDate.setDate(nextDate.getDate() + 7);
+      break;
+    case "monthly":
+      nextDate.setMonth(nextDate.getMonth() + 1);
+      break;
+    case "yearly":
+      nextDate.setFullYear(nextDate.getFullYear() + 1);
+      break;
+    default:
+      throw new Error("Invalid frequency");
+  }
+
+  return nextDate;
+}
+
+async function processRecurringTransactions() {
+  const now = new Date();
+
+  try {
+    const dueRecurringTransactions = await RecurringTransaction.find({
+      isActive: true,
+      nextDueDate: { $lte: now },
+      $or: [{ endDate: null }, { endDate: { $gte: now } }],
+    });
+
+    for (const recurring of dueRecurringTransactions) {
+      // Create the actual transaction
+      const newTransaction = new Transaction({
+        userId: recurring.userId,
+        transactionId: crypto.randomUUID(),
+        description: `${recurring.description} (Recurring)`,
+        amount: recurring.amount,
+        type: recurring.type,
+        category: recurring.category,
+        date: now.toISOString(),
+      });
+
+      await newTransaction.save();
+
+      // Update the recurring transaction's next due date
+      const nextDueDate = calculateNextDueDate(
+        recurring.nextDueDate,
+        recurring.frequency
+      );
+
+      await RecurringTransaction.updateOne(
+        { _id: recurring._id },
+        {
+          $set: {
+            nextDueDate,
+            lastProcessed: now,
+          },
+        }
+      );
+
+      console.log(`Processed recurring transaction: ${recurring.description}`);
+    }
+
+    console.log(
+      `Processed ${dueRecurringTransactions.length} recurring transactions`
+    );
+  } catch (error) {
+    console.error("Error processing recurring transactions:", error);
+  }
+}
+
+const agenda = new Agenda({
+  db: { address: MONGODB_URI, collection: "jobs" },
+});
+
+agenda.define("process recurring translations", async (job) => {
+  console.log("Processing recurring translations via Agenda...");
+
+  try {
+    const result = await processRecurringTransactions();
+    console.log("Agenda job completed", result);
+  } catch (err) {
+    console.error("Agenda job failed", err);
+    throw err;
+  }
+});
+
+(async () => {
+  await agenda.start();
+
+  await agenda.every("1 hour", "process recurring translations");
+})();
 
 // Middleware
 app.use(express.json());
@@ -105,9 +203,77 @@ const transactionSchema = new mongoose.Schema(
 transactionSchema.index({ userId: 1, transactionId: 1 }, { unique: true });
 transactionSchema.index({ userId: 1, createdAt: -1 });
 
+// Recurring Transactions
+const recurringTransactionSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    recurringId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    amount: {
+      type: Number,
+      required: true,
+    },
+    type: {
+      type: String,
+      required: true,
+      enum: ["income", "expense"],
+    },
+    category: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    frequency: {
+      type: String,
+      required: true,
+      enum: ["daily", "weekly", "monthly", "yearly"],
+    },
+    startDate: {
+      type: Date,
+      required: true,
+    },
+    endDate: {
+      type: Date,
+      default: null, // null means no end date
+    },
+    nextDueDate: {
+      type: Date,
+      required: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+    lastProcessed: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
 // Models
 const User = mongoose.model("User", userSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
+const RecurringTransaction = mongoose.model(
+  "RecurringTransaction",
+  recurringTransactionSchema
+);
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -569,31 +735,193 @@ app.get(
 
 // Use SSE
 app.get("/api/sse/:userId", (req, res) => {
-  // Set headers for SSE
-  res.setHeaders(
-    new Headers({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    })
-  );
+  console.log(`SSE connection established for user: ${req.params.userId}`);
 
-  // Send SSE events whenever the transactions change
+  // FIXED: Use res.setHeader (singular) instead of res.setHeaders
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Cache-Control");
+
   const userId = req.params.userId;
 
-  const changeStream = Transaction.watch([
-    { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-  ]);
+  // FIXED: Add ObjectId validation
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    res.status(400).write('data: {"error": "Invalid user ID"}\n\n');
+    res.end();
+    return;
+  }
 
-  changeStream.on("change", () => {
-    res.write(`data: transactions for ${userId} changes\n\n`);
-  });
+  // Send initial connection confirmation
+  res.write("data: SSE connection established\n\n");
 
-  // Close the connection when the client disconnects
-  req.on("close", () => {
-    changeStream.close();
-  });
+  try {
+    // FIXED: Use proper ObjectId constructor
+    const changeStream = Transaction.watch([
+      {
+        $match: { "fullDocument.userId": new mongoose.Types.ObjectId(userId) },
+      },
+    ]);
+
+    changeStream.on("change", (change) => {
+      console.log("Transaction change detected:", change.operationType);
+      // FIXED: Send proper SSE format with more specific data
+      res.write(`data: transactions updated for ${userId}\n\n`);
+    });
+
+    changeStream.on("error", (error) => {
+      console.error("Change stream error:", error);
+      res.write(`data: {"error": "Change stream error"}\n\n`);
+    });
+
+    // FIXED: Handle connection close properly
+    req.on("close", () => {
+      console.log(`SSE connection closed for user: ${userId}`);
+      changeStream.close();
+    });
+
+    req.on("error", (error) => {
+      console.error("SSE request error:", error);
+      changeStream.close();
+    });
+  } catch (error) {
+    console.error("SSE setup error:", error);
+    res.status(500).write(`data: {"error": "SSE setup failed"}\n\n`);
+    res.end();
+  }
 });
+
+// Get user's recurring transactions
+app.get("/api/recurring-transactions", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const recurringTransactions = await RecurringTransaction.find({
+      userId,
+      isActive: true,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ recurringTransactions });
+  } catch (error) {
+    console.error("Error fetching recurring transactions:", error);
+    res.status(500).json({ error: "Failed to fetch recurring transactions" });
+  }
+});
+
+// Create new recurring transaction
+app.post("/api/recurring-transactions", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const {
+      description,
+      amount,
+      type,
+      category,
+      frequency,
+      startDate,
+      endDate,
+    } = req.body;
+
+    // Validation
+    if (
+      !description ||
+      !amount ||
+      !type ||
+      !category ||
+      !frequency ||
+      !startDate
+    ) {
+      return res
+        .status(400)
+        .json({ error: "All required fields must be provided" });
+    }
+
+    const recurringId = crypto.randomUUID();
+    const nextDueDate = calculateNextDueDate(new Date(startDate), frequency);
+
+    const recurringTransaction = new RecurringTransaction({
+      userId,
+      recurringId,
+      description,
+      amount,
+      type,
+      category,
+      frequency,
+      startDate: new Date(startDate),
+      endDate: endDate ? new Date(endDate) : null,
+      nextDueDate,
+    });
+
+    await recurringTransaction.save();
+
+    res.status(201).json({
+      message: "Recurring transaction created successfully",
+      recurringTransaction,
+    });
+  } catch (error) {
+    console.error("Error creating recurring transaction:", error);
+    res.status(500).json({ error: "Failed to create recurring transaction" });
+  }
+});
+
+// Update recurring transaction
+app.put(
+  "/api/recurring-transactions/:recurringId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const { recurringId } = req.params;
+      const updates = req.body;
+
+      const result = await RecurringTransaction.updateOne(
+        { userId, recurringId },
+        { $set: updates }
+      );
+
+      if (result.matchedCount === 0) {
+        return res
+          .status(404)
+          .json({ error: "Recurring transaction not found" });
+      }
+
+      res.json({ message: "Recurring transaction updated successfully" });
+    } catch (error) {
+      console.error("Error updating recurring transaction:", error);
+      res.status(500).json({ error: "Failed to update recurring transaction" });
+    }
+  }
+);
+
+// Delete/deactivate recurring transaction
+app.delete(
+  "/api/recurring-transactions/:recurringId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const { recurringId } = req.params;
+
+      const result = await RecurringTransaction.updateOne(
+        { userId, recurringId },
+        { $set: { isActive: false } }
+      );
+
+      if (result.matchedCount === 0) {
+        return res
+          .status(404)
+          .json({ error: "Recurring transaction not found" });
+      }
+
+      res.json({ message: "Recurring transaction deactivated successfully" });
+    } catch (error) {
+      console.error("Error deleting recurring transaction:", error);
+      res.status(500).json({ error: "Failed to delete recurring transaction" });
+    }
+  }
+);
 
 // Error handling middleware
 app.use((error, req, res, next) => {
@@ -619,6 +947,12 @@ process.on("SIGINT", async () => {
     console.log("MongoDB connection closed.");
   } catch (error) {
     console.error("Error closing MongoDB connection:", error);
+  }
+  try {
+    await agenda.stop();
+    console.log("Agenda stopped successfully");
+  } catch (err) {
+    console.error("Error stopping Agenda: ", err);
   }
   process.exit(0);
 });
