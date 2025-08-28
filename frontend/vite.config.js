@@ -3,11 +3,33 @@ import react from "@vitejs/plugin-react";
 import fs from "fs";
 import { minify } from "terser";
 import htmlMinifier from "html-minifier-terser";
+import { createHash } from "crypto";
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
+    {
+      name: 'file-hash',
+      generateBundle(outputOptions, bundle) {
+        Object.keys(bundle).forEach(fileName => {
+          const chunk = bundle[fileName];
+          
+          // Only process chunks (JS/CSS files)
+          if (chunk.type !== 'chunk') return;
+          
+          // Generate SHA256 hash of the content
+          const hash = createHash('sha256')
+            .update(chunk.code)
+            .digest('hex')
+            .substring(0, 16); // Use first 16 chars for readability
+          
+          // Prepend hash comment to the file
+          const hashComment = `/* HASH:${hash} */\n`;
+          chunk.code = hashComment + chunk.code;
+        });
+      }
+    },
     {
       name: "minify-sw-and-manifest",
       closeBundle: async () => {
