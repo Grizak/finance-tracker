@@ -11,14 +11,14 @@ export default defineConfig({
     {
       name: "minify-sw-and-manifest",
       closeBundle: async () => {
-        const swFile = "../server/dist/sw.js";
+        const swFile = "dist/sw.js";
         if (fs.existsSync(swFile)) {
           const { code } = await minify(fs.readFileSync(swFile, "utf8"));
           fs.writeFileSync(swFile, code, "utf8");
           console.log("✅ Minified sw.js");
         }
 
-        const manifestFile = "../server/dist/manifest.json";
+        const manifestFile = "dist/manifest.json";
         if (fs.existsSync(manifestFile)) {
           fs.writeFileSync(
             manifestFile,
@@ -32,7 +32,7 @@ export default defineConfig({
     {
       name: "minify-index-html",
       closeBundle: async () => {
-        const file = "../server/dist/index.html";
+        const file = "dist/index.html";
         if (fs.existsSync(file)) {
           const html = fs.readFileSync(file, "utf8");
           const minified = await htmlMinifier.minify(html, {
@@ -48,7 +48,7 @@ export default defineConfig({
     },
   ],
   build: {
-    outDir: "../server/dist",
+    outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
       output: {
