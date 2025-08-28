@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 
 // Add to App.jsx
-const RecurringTransactionForm = ({ onAdd, onCancel }) => {
+const RecurringTransactionForm = ({ onAdd, onCancel, categories }) => {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [type, setType] = useState("expense");
@@ -976,6 +976,7 @@ const FinanceTracker = () => {
           <RecurringTransactionForm
             onAdd={addRecurringTransaction}
             onCancel={() => setShowRecurringForm(false)}
+            categories
           />
         )}
 
