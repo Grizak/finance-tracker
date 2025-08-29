@@ -976,7 +976,7 @@ const FinanceTracker = () => {
           <RecurringTransactionForm
             onAdd={addRecurringTransaction}
             onCancel={() => setShowRecurringForm(false)}
-            categories
+            categories={categories}
           />
         )}
 
