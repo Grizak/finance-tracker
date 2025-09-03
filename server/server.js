@@ -3,13 +3,46 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const fs = require("fs");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
-const Agenda = require("agenda");
+
+// Fix: Import crypto properly for Node.js
+const { randomUUID } = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MONGODB_URI = process.env.MONGODB_URI;
+
+// Rate limiting
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+  message: {
+    error: "Too many authentication attempts, please try again later.",
+  },
+});
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { error: "Too many requests, please try again later." },
+});
+
+// Supported currencies
+const SUPPORTED_CURRENCIES = [
+  "USD",
+  "EUR",
+  "GBP",
+  "JPY",
+  "CAD",
+  "AUD",
+  "CHF",
+  "CNY",
+  "SEK",
+  "NOK",
+  "DKK",
+];
 
 // Utility functions for recurring transactions
 function calculateNextDueDate(currentDate, frequency) {
@@ -49,12 +82,13 @@ async function processRecurringTransactions() {
       // Create the actual transaction
       const newTransaction = new Transaction({
         userId: recurring.userId,
-        transactionId: crypto.randomUUID(),
+        transactionId: randomUUID(), // Fixed: use proper import
         description: `${recurring.description} (Recurring)`,
         amount: recurring.amount,
         type: recurring.type,
         category: recurring.category,
         date: now.toISOString(),
+        currency: recurring.currency || "USD", // Add currency support
       });
 
       await newTransaction.save();
@@ -83,62 +117,108 @@ async function processRecurringTransactions() {
     );
   } catch (error) {
     console.error("Error processing recurring transactions:", error);
+    throw error; // Re-throw for better error handling
   }
 }
 
-const agenda = new Agenda({
-  db: { address: MONGODB_URI, collection: "jobs" },
-});
-
-agenda.define("process recurring translations", async (job) => {
-  console.log("Processing recurring translations via Agenda...");
-
+// Only initialize Agenda if MONGODB_URI is available
+let agenda = null;
+if (MONGODB_URI) {
   try {
-    const result = await processRecurringTransactions();
-    console.log("Agenda job completed", result);
-  } catch (err) {
-    console.error("Agenda job failed", err);
-    throw err;
+    const Agenda = require("agenda");
+    agenda = new Agenda({
+      db: { address: MONGODB_URI, collection: "jobs" },
+      processEvery: "1 hour",
+      maxConcurrency: 1,
+    });
+
+    agenda.define("process recurring transactions", async (job) => {
+      console.log("Processing recurring transactions via Agenda...");
+      try {
+        await processRecurringTransactions();
+        console.log("Agenda job completed successfully");
+      } catch (err) {
+        console.error("Agenda job failed", err);
+        throw err;
+      }
+    });
+
+    // Start agenda with error handling
+    (async () => {
+      try {
+        await agenda.start();
+        await agenda.every("1 hour", "process recurring transactions");
+        console.log("✅ Agenda started successfully");
+      } catch (error) {
+        console.error("❌ Failed to start Agenda:", error);
+      }
+    })();
+  } catch (error) {
+    console.log("Agenda initialization skipped:", error.message);
   }
-});
-
-(async () => {
-  await agenda.start();
-
-  await agenda.every("1 hour", "process recurring translations");
-})();
+}
 
 // Middleware
-app.use(express.json());
+app.use(generalLimiter);
+app.use(express.json({ limit: "10mb" }));
 
+// Enhanced logging middleware
 app.use((req, res, next) => {
-  console.log(`${req.method} ${req.path}`);
+  console.log(
+    `${new Date().toISOString()} - ${req.method} ${req.path} - IP: ${req.ip}`
+  );
+  next();
+});
+
+// Security headers
+app.use((req, res, next) => {
+  res.removeHeader("X-Powered-By");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
 
 app.use(express.static("dist"));
 
 app.get("/favicon.ico", (req, res) => {
-  res.sendFile("/dist/favicon.png");
+  res.sendFile(path.resolve("dist/favicon.png"));
 });
 
-app.use((req, res, next) => {
-  res.removeHeader("X-Powered-By");
-  next();
-});
-
-// MongoDB connection
+// MongoDB connection with better error handling
 mongoose
-  .connect(MONGODB_URI)
+  .connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  })
   .then(() => {
     console.log("✅ Connected to MongoDB");
   })
   .catch((error) => {
     console.error("❌ MongoDB connection error:", error);
-    process.exit(1);
+    // Don't exit in development
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1);
+    }
   });
 
-// MongoDB Schemas
+// MongoDB connection event listeners
+mongoose.connection.on("error", (error) => {
+  console.error("MongoDB connection error:", error);
+});
+
+mongoose.connection.on("disconnected", () => {
+  console.log("MongoDB disconnected");
+});
+
+mongoose.connection.on("reconnected", () => {
+  console.log("MongoDB reconnected");
+});
+
+// Enhanced MongoDB Schemas
 const userSchema = new mongoose.Schema(
   {
     email: {
@@ -147,10 +227,34 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      validate: {
+        validator: function (email) {
+          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+        },
+        message: "Please provide a valid email address",
+      },
     },
     passwordHash: {
       type: String,
       required: true,
+      minlength: 6,
+    },
+    defaultCurrency: {
+      type: String,
+      default: "USD",
+      enum: SUPPORTED_CURRENCIES,
+    },
+    preferences: {
+      theme: {
+        type: String,
+        default: "light",
+        enum: ["light", "dark"],
+      },
+      dateFormat: {
+        type: String,
+        default: "MM/DD/YYYY",
+        enum: ["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"],
+      },
     },
   },
   {
@@ -174,10 +278,18 @@ const transactionSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 200,
     },
     amount: {
       type: Number,
       required: true,
+      min: 0.01,
+      validate: {
+        validator: function (amount) {
+          return amount > 0;
+        },
+        message: "Amount must be greater than 0",
+      },
     },
     type: {
       type: String,
@@ -188,10 +300,29 @@ const transactionSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 50,
     },
     date: {
       type: String,
       required: true,
+    },
+    currency: {
+      type: String,
+      required: true,
+      default: "USD",
+      enum: SUPPORTED_CURRENCIES,
+    },
+    tags: [
+      {
+        type: String,
+        trim: true,
+        maxlength: 20,
+      },
+    ],
+    notes: {
+      type: String,
+      trim: true,
+      maxlength: 500,
     },
   },
   {
@@ -199,11 +330,13 @@ const transactionSchema = new mongoose.Schema(
   }
 );
 
-// Compound index for user transactions
+// Compound indexes for better performance
 transactionSchema.index({ userId: 1, transactionId: 1 }, { unique: true });
 transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ userId: 1, currency: 1 });
+transactionSchema.index({ userId: 1, type: 1, currency: 1 });
 
-// Recurring Transactions
+// Enhanced Recurring Transactions Schema
 const recurringTransactionSchema = new mongoose.Schema(
   {
     userId: {
@@ -221,10 +354,12 @@ const recurringTransactionSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 200,
     },
     amount: {
       type: Number,
       required: true,
+      min: 0.01,
     },
     type: {
       type: String,
@@ -235,6 +370,7 @@ const recurringTransactionSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 50,
     },
     frequency: {
       type: String,
@@ -247,25 +383,44 @@ const recurringTransactionSchema = new mongoose.Schema(
     },
     endDate: {
       type: Date,
-      default: null, // null means no end date
+      default: null,
     },
     nextDueDate: {
       type: Date,
       required: true,
+      index: true,
+    },
+    currency: {
+      type: String,
+      required: true,
+      default: "USD",
+      enum: SUPPORTED_CURRENCIES,
     },
     isActive: {
       type: Boolean,
       default: true,
+      index: true,
     },
     lastProcessed: {
       type: Date,
       default: null,
     },
+    tags: [
+      {
+        type: String,
+        trim: true,
+        maxlength: 20,
+      },
+    ],
   },
   {
     timestamps: true,
   }
 );
+
+// Indexes for recurring transactions
+recurringTransactionSchema.index({ userId: 1, isActive: 1 });
+recurringTransactionSchema.index({ nextDueDate: 1, isActive: 1 });
 
 // Models
 const User = mongoose.model("User", userSchema);
@@ -275,24 +430,31 @@ const RecurringTransaction = mongoose.model(
   recurringTransactionSchema
 );
 
-// Middleware to verify JWT token
+// Enhanced JWT middleware with better error handling
 const authenticateToken = (req, res, next) => {
-  console.log("Started JWT authentication");
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
+  try {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
 
-  if (!token) {
-    return res.status(401).json({ error: "Access token required" });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: "Invalid or expired token" });
+    if (!token) {
+      return res.status(401).json({ error: "Access token required" });
     }
-    req.user = user;
-    console.log("JWT authentication finished");
-    next();
-  });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (err) {
+        console.error("JWT verification error:", err.message);
+        if (err.name === "TokenExpiredError") {
+          return res.status(401).json({ error: "Token expired" });
+        }
+        return res.status(403).json({ error: "Invalid token" });
+      }
+      req.user = user;
+      next();
+    });
+  } catch (error) {
+    console.error("Authentication middleware error:", error);
+    res.status(500).json({ error: "Authentication error" });
+  }
 };
 
 // Utility function to generate JWT token
@@ -300,24 +462,69 @@ const generateToken = (userId, email) => {
   return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: "7d" });
 };
 
+// Input validation middleware
+const validateTransactionInput = (req, res, next) => {
+  const { description, amount, type, category, currency } = req.body;
+
+  if (
+    !description ||
+    typeof description !== "string" ||
+    description.trim().length === 0
+  ) {
+    return res.status(400).json({ error: "Description is required" });
+  }
+
+  if (!amount || typeof amount !== "number" || amount <= 0) {
+    return res
+      .status(400)
+      .json({ error: "Valid amount greater than 0 is required" });
+  }
+
+  if (!type || !["income", "expense"].includes(type)) {
+    return res
+      .status(400)
+      .json({ error: "Type must be 'income' or 'expense'" });
+  }
+
+  if (
+    !category ||
+    typeof category !== "string" ||
+    category.trim().length === 0
+  ) {
+    return res.status(400).json({ error: "Category is required" });
+  }
+
+  if (currency && !SUPPORTED_CURRENCIES.includes(currency)) {
+    return res.status(400).json({ error: "Unsupported currency" });
+  }
+
+  next();
+};
+
 // Routes
 
-// Health check
+// Health check with more detailed information
 app.get("/api/health", (req, res) => {
-  res.json({
+  const healthData = {
     status: "OK",
     message: "Finance Tracker API is running",
+    timestamp: new Date().toISOString(),
     database:
       mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
-  });
+    version: process.env.npm_package_version || "unknown",
+    environment: process.env.NODE_ENV || "development",
+    agenda: agenda ? "Active" : "Disabled",
+  };
+
+  res.json(healthData);
 });
 
-// User Registration
-app.post("/api/auth/register", async (req, res) => {
+// User Registration with enhanced validation
+app.post("/api/auth/register", authLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, defaultCurrency = "USD" } = req.body;
 
-    // Validation
+    // Enhanced validation
     if (!email || !password) {
       return res.status(400).json({ error: "Email and password are required" });
     }
@@ -336,8 +543,13 @@ app.post("/api/auth/register", async (req, res) => {
         .json({ error: "Please provide a valid email address" });
     }
 
+    // Currency validation
+    if (defaultCurrency && !SUPPORTED_CURRENCIES.includes(defaultCurrency)) {
+      return res.status(400).json({ error: "Unsupported currency" });
+    }
+
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
       return res
         .status(400)
@@ -345,12 +557,13 @@ app.post("/api/auth/register", async (req, res) => {
     }
 
     // Hash password and create user
-    const saltRounds = 10;
+    const saltRounds = 12; // Increased for better security
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
     const newUser = new User({
-      email,
+      email: email.toLowerCase(),
       passwordHash,
+      defaultCurrency,
     });
 
     const savedUser = await newUser.save();
@@ -361,6 +574,7 @@ app.post("/api/auth/register", async (req, res) => {
       email: savedUser.email,
       token,
       userId: savedUser._id,
+      defaultCurrency: savedUser.defaultCurrency,
     });
   } catch (error) {
     console.error("Registration error:", error);
@@ -369,12 +583,15 @@ app.post("/api/auth/register", async (req, res) => {
         .status(400)
         .json({ error: "User already exists with this email" });
     }
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: "Server error during registration" });
   }
 });
 
-// User Login
-app.post("/api/auth/login", async (req, res) => {
+// User Login with enhanced security
+app.post("/api/auth/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -382,7 +599,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
@@ -398,6 +615,7 @@ app.post("/api/auth/login", async (req, res) => {
       email: user.email,
       token,
       userId: user._id,
+      defaultCurrency: user.defaultCurrency,
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -405,32 +623,115 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Get user transactions - FIXED: Don't parseInt the transactionId since it's a UUID
+// Update user preferences
+app.patch("/api/user/preferences", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { defaultCurrency, preferences } = req.body;
+
+    const updateData = {};
+
+    if (defaultCurrency) {
+      if (!SUPPORTED_CURRENCIES.includes(defaultCurrency)) {
+        return res.status(400).json({ error: "Unsupported currency" });
+      }
+      updateData.defaultCurrency = defaultCurrency;
+    }
+
+    if (preferences) {
+      if (preferences.theme && !["light", "dark"].includes(preferences.theme)) {
+        return res.status(400).json({ error: "Invalid theme" });
+      }
+      updateData.preferences = preferences;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    ).select("-passwordHash");
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({
+      message: "Preferences updated successfully",
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Error updating preferences:", error);
+    res.status(500).json({ error: "Failed to update preferences" });
+  }
+});
+
+// Get user transactions with enhanced filtering and pagination
 app.get("/api/transactions", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 100;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
     const skip = (page - 1) * limit;
 
-    const transactions = await Transaction.find({ userId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean()
-      .maxTimeMS(4000);
+    // Build filter
+    const filter = { userId };
 
-    // Convert to frontend format - FIXED: Keep transactionId as string (UUID)
+    // Currency filter
+    if (
+      req.query.currency &&
+      SUPPORTED_CURRENCIES.includes(req.query.currency)
+    ) {
+      filter.currency = req.query.currency;
+    }
+
+    // Type filter
+    if (req.query.type && ["income", "expense"].includes(req.query.type)) {
+      filter.type = req.query.type;
+    }
+
+    // Date range filter
+    if (req.query.startDate || req.query.endDate) {
+      filter.date = {};
+      if (req.query.startDate) {
+        filter.date.$gte = req.query.startDate;
+      }
+      if (req.query.endDate) {
+        filter.date.$lte = req.query.endDate;
+      }
+    }
+
+    const [transactions, totalCount] = await Promise.all([
+      Transaction.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .maxTimeMS(5000),
+      Transaction.countDocuments(filter),
+    ]);
+
+    // Convert to frontend format
     const formattedTransactions = transactions.map((transaction) => ({
-      id: transaction.transactionId, // Don't parseInt - keep as UUID string
+      id: transaction.transactionId,
       description: transaction.description,
       amount: transaction.amount,
       type: transaction.type,
       category: transaction.category,
       date: transaction.date,
+      currency: transaction.currency,
+      tags: transaction.tags || [],
+      notes: transaction.notes,
     }));
 
-    res.json({ transactions: formattedTransactions });
+    res.json({
+      transactions: formattedTransactions,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        pages: Math.ceil(totalCount / limit),
+      },
+    });
   } catch (error) {
     if (error.name === "MongoServerError" && error.code === 50) {
       return res.status(408).json({ error: "Query timeout" });
@@ -440,112 +741,101 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
   }
 });
 
-// Save user transactions - FIXED: Better validation and error logging
+// Save user transactions with better validation and error handling
 app.post("/api/transactions", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { transactions } = req.body;
 
-    console.log(
-      "Received transactions data:",
-      JSON.stringify(
-        {
-          userId,
-          transactionCount: transactions?.length,
-          sampleTransaction: transactions?.[0],
-        },
-        null,
-        2
-      )
-    );
-
     if (!Array.isArray(transactions)) {
-      console.log("Validation failed: transactions is not an array");
       return res.status(400).json({ error: "Transactions must be an array" });
     }
 
-    // Validate transactions - FIXED: Better validation with detailed logging
+    if (transactions.length > 1000) {
+      return res
+        .status(400)
+        .json({ error: "Too many transactions (max 1000)" });
+    }
+
+    // Enhanced validation
+    const validationErrors = [];
     for (let i = 0; i < transactions.length; i++) {
       const transaction = transactions[i];
-      console.log(`Validating transaction ${i}:`, transaction);
 
-      // Check each required field individually for better error messages
       if (!transaction.id) {
-        console.log(`Validation failed at transaction ${i}: missing id`);
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: id is required` });
+        validationErrors.push(`Transaction ${i}: id is required`);
       }
-      if (!transaction.description) {
-        console.log(
-          `Validation failed at transaction ${i}: missing description`
+      if (
+        !transaction.description ||
+        typeof transaction.description !== "string"
+      ) {
+        validationErrors.push(`Transaction ${i}: description is required`);
+      }
+      if (
+        !transaction.amount ||
+        typeof transaction.amount !== "number" ||
+        transaction.amount <= 0
+      ) {
+        validationErrors.push(
+          `Transaction ${i}: valid amount greater than 0 is required`
         );
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: description is required` });
       }
-      if (transaction.amount === undefined || transaction.amount === null) {
-        console.log(`Validation failed at transaction ${i}: missing amount`);
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: amount is required` });
+      if (
+        !transaction.type ||
+        !["income", "expense"].includes(transaction.type)
+      ) {
+        validationErrors.push(
+          `Transaction ${i}: type must be income or expense`
+        );
       }
-      if (!transaction.type) {
-        console.log(`Validation failed at transaction ${i}: missing type`);
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: type is required` });
-      }
-      if (!transaction.category) {
-        console.log(`Validation failed at transaction ${i}: missing category`);
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: category is required` });
+      if (!transaction.category || typeof transaction.category !== "string") {
+        validationErrors.push(`Transaction ${i}: category is required`);
       }
       if (!transaction.date) {
-        console.log(`Validation failed at transaction ${i}: missing date`);
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: date is required` });
+        validationErrors.push(`Transaction ${i}: date is required`);
       }
-      if (!["income", "expense"].includes(transaction.type)) {
-        console.log(
-          `Validation failed at transaction ${i}: invalid type "${transaction.type}"`
+      if (
+        transaction.currency &&
+        !SUPPORTED_CURRENCIES.includes(transaction.currency)
+      ) {
+        validationErrors.push(
+          `Transaction ${i}: unsupported currency ${transaction.currency}`
         );
-        return res
-          .status(400)
-          .json({ error: `Transaction ${i}: type must be income or expense` });
       }
     }
 
-    console.log("All transactions validated successfully");
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ error: validationErrors.join("; ") });
+    }
 
     // Use MongoDB session for transaction
     const session = await mongoose.startSession();
-    await session.withTransaction(async () => {
-      // Delete existing transactions
-      await Transaction.deleteMany({ userId }, { session });
+    try {
+      await session.withTransaction(async () => {
+        // Delete existing transactions
+        await Transaction.deleteMany({ userId }, { session });
 
-      // Insert new transactions
-      if (transactions.length > 0) {
-        const transactionDocs = transactions.map((transaction) => ({
-          userId,
-          transactionId: transaction.id.toString(), // Keep as string (UUID)
-          description: transaction.description,
-          amount: transaction.amount,
-          type: transaction.type,
-          category: transaction.category,
-          date: transaction.date,
-        }));
+        // Insert new transactions
+        if (transactions.length > 0) {
+          const transactionDocs = transactions.map((transaction) => ({
+            userId,
+            transactionId: transaction.id.toString(),
+            description: transaction.description.trim(),
+            amount: transaction.amount,
+            type: transaction.type,
+            category: transaction.category.trim(),
+            date: transaction.date,
+            currency: transaction.currency || "USD",
+            tags: transaction.tags || [],
+            notes: transaction.notes || "",
+          }));
 
-        await Transaction.insertMany(transactionDocs, { session });
-        console.log(
-          `Successfully inserted ${transactionDocs.length} transactions`
-        );
-      }
-    });
-
-    await session.endSession();
+          await Transaction.insertMany(transactionDocs, { session });
+        }
+      });
+    } finally {
+      await session.endSession();
+    }
 
     res.json({
       message: "Transactions updated successfully",
@@ -553,61 +843,75 @@ app.post("/api/transactions", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating transactions:", error);
-    console.error("Error stack:", error.stack);
     if (error.code === 11000) {
       return res.status(400).json({ error: "Duplicate transaction ID found" });
+    }
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: "Failed to update transactions" });
   }
 });
 
-// Add a single transaction
-app.post("/api/transactions/add", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { id, description, amount, type, category, date } = req.body;
+// Add a single transaction with enhanced validation
+app.post(
+  "/api/transactions/add",
+  authenticateToken,
+  validateTransactionInput,
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const {
+        id,
+        description,
+        amount,
+        type,
+        category,
+        date,
+        currency = "USD",
+        tags,
+        notes,
+      } = req.body;
 
-    // Validation
-    if (!id || !description || !amount || !type || !category || !date) {
-      return res
-        .status(400)
-        .json({ error: "All transaction fields are required" });
+      if (!id || !date) {
+        return res.status(400).json({ error: "ID and date are required" });
+      }
+
+      const newTransaction = new Transaction({
+        userId,
+        transactionId: id.toString(),
+        description: description.trim(),
+        amount,
+        type,
+        category: category.trim(),
+        date,
+        currency,
+        tags: tags || [],
+        notes: notes || "",
+      });
+
+      await newTransaction.save();
+
+      res.status(201).json({
+        message: "Transaction added successfully",
+        transactionId: id,
+      });
+    } catch (error) {
+      console.error("Error adding transaction:", error);
+      if (error.code === 11000) {
+        return res
+          .status(400)
+          .json({ error: "Transaction with this ID already exists" });
+      }
+      if (error.name === "ValidationError") {
+        return res.status(400).json({ error: error.message });
+      }
+      res.status(500).json({ error: "Failed to add transaction" });
     }
-
-    if (!["income", "expense"].includes(type)) {
-      return res
-        .status(400)
-        .json({ error: "Transaction type must be income or expense" });
-    }
-
-    const newTransaction = new Transaction({
-      userId,
-      transactionId: id.toString(),
-      description,
-      amount,
-      type,
-      category,
-      date,
-    });
-
-    await newTransaction.save();
-
-    res.status(201).json({
-      message: "Transaction added successfully",
-      transactionId: id,
-    });
-  } catch (error) {
-    console.error("Error adding transaction:", error);
-    if (error.code === 11000) {
-      return res
-        .status(400)
-        .json({ error: "Transaction with this ID already exists" });
-    }
-    res.status(500).json({ error: "Failed to add transaction" });
   }
-});
+);
 
-// Delete a transaction
+// Delete a transaction with better error handling
 app.delete(
   "/api/transactions/:transactionId",
   authenticateToken,
@@ -615,6 +919,10 @@ app.delete(
     try {
       const userId = req.user.userId;
       const transactionId = req.params.transactionId;
+
+      if (!transactionId) {
+        return res.status(400).json({ error: "Transaction ID is required" });
+      }
 
       const result = await Transaction.deleteOne({ userId, transactionId });
 
@@ -630,7 +938,7 @@ app.delete(
   }
 );
 
-// Get user profile
+// Get user profile with preferences
 app.get("/api/user/profile", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -643,6 +951,8 @@ app.get("/api/user/profile", authenticateToken, async (req, res) => {
     res.json({
       id: user._id,
       email: user.email,
+      defaultCurrency: user.defaultCurrency,
+      preferences: user.preferences,
       createdAt: user.createdAt,
     });
   } catch (error) {
@@ -651,7 +961,7 @@ app.get("/api/user/profile", authenticateToken, async (req, res) => {
   }
 });
 
-// Get transaction statistics
+// Enhanced transaction statistics with currency breakdown
 app.get("/api/transactions/stats", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -660,9 +970,12 @@ app.get("/api/transactions/stats", authenticateToken, async (req, res) => {
       { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       {
         $group: {
-          _id: "$type",
+          _id: { type: "$type", currency: "$currency" },
           total: { $sum: "$amount" },
           count: { $sum: 1 },
+          avgAmount: { $avg: "$amount" },
+          minAmount: { $min: "$amount" },
+          maxAmount: { $max: "$amount" },
         },
       },
     ]);
@@ -673,19 +986,45 @@ app.get("/api/transactions/stats", authenticateToken, async (req, res) => {
       incomeCount: 0,
       expenseCount: 0,
       balance: 0,
+      byCurrency: {},
     };
 
     stats.forEach((stat) => {
-      if (stat._id === "income") {
-        result.totalIncome = stat.total;
-        result.incomeCount = stat.count;
-      } else if (stat._id === "expense") {
-        result.totalExpenses = stat.total;
-        result.expenseCount = stat.count;
+      const currency = stat._id.currency;
+      const type = stat._id.type;
+
+      if (!result.byCurrency[currency]) {
+        result.byCurrency[currency] = {
+          income: { total: 0, count: 0, avg: 0, min: 0, max: 0 },
+          expense: { total: 0, count: 0, avg: 0, min: 0, max: 0 },
+          balance: 0,
+        };
+      }
+
+      result.byCurrency[currency][type] = {
+        total: stat.total,
+        count: stat.count,
+        avg: stat.avgAmount,
+        min: stat.minAmount,
+        max: stat.maxAmount,
+      };
+
+      if (type === "income") {
+        result.totalIncome += stat.total;
+        result.incomeCount += stat.count;
+      } else if (type === "expense") {
+        result.totalExpenses += stat.total;
+        result.expenseCount += stat.count;
       }
     });
 
+    // Calculate balances
     result.balance = result.totalIncome - result.totalExpenses;
+
+    Object.keys(result.byCurrency).forEach((currency) => {
+      const curr = result.byCurrency[currency];
+      curr.balance = curr.income.total - curr.expense.total;
+    });
 
     res.json(result);
   } catch (error) {
@@ -694,18 +1033,22 @@ app.get("/api/transactions/stats", authenticateToken, async (req, res) => {
   }
 });
 
-// Get transactions by category
+// Get transactions by category with currency support
 app.get(
   "/api/transactions/by-category",
   authenticateToken,
   async (req, res) => {
     try {
       const userId = req.user.userId;
-      const type = req.query.type; // 'income' or 'expense'
+      const type = req.query.type;
+      const currency = req.query.currency;
 
       const matchStage = { userId: new mongoose.Types.ObjectId(userId) };
       if (type && ["income", "expense"].includes(type)) {
         matchStage.type = type;
+      }
+      if (currency && SUPPORTED_CURRENCIES.includes(currency)) {
+        matchStage.currency = currency;
       }
 
       const categoryStats = await Transaction.aggregate([
@@ -715,9 +1058,11 @@ app.get(
             _id: {
               category: "$category",
               type: "$type",
+              currency: "$currency",
             },
             total: { $sum: "$amount" },
             count: { $sum: 1 },
+            avgAmount: { $avg: "$amount" },
           },
         },
         {
@@ -733,63 +1078,107 @@ app.get(
   }
 );
 
-// Use SSE
+// Enhanced SSE with better error handling
 app.get("/api/sse/:userId", (req, res) => {
-  console.log(`SSE connection established for user: ${req.params.userId}`);
-
-  // FIXED: Use res.setHeader (singular) instead of res.setHeaders
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Cache-Control");
-
   const userId = req.params.userId;
 
-  // FIXED: Add ObjectId validation
   if (!mongoose.Types.ObjectId.isValid(userId)) {
-    res.status(400).write('data: {"error": "Invalid user ID"}\n\n');
-    res.end();
+    res.status(400).end();
     return;
   }
 
+  // Set SSE headers
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Cache-Control",
+  });
+
   // Send initial connection confirmation
-  res.write("data: SSE connection established\n\n");
+  res.write("data: Connected to SSE\n\n");
+
+  let changeStream = null;
+  let heartbeatInterval = null;
 
   try {
-    // FIXED: Use proper ObjectId constructor
-    const changeStream = Transaction.watch([
-      {
-        $match: { "fullDocument.userId": new mongoose.Types.ObjectId(userId) },
-      },
-    ]);
+    // Watch for changes to user's transactions
+    changeStream = Transaction.watch(
+      [
+        {
+          $match: {
+            "fullDocument.userId": new mongoose.Types.ObjectId(userId),
+            operationType: { $in: ["insert", "update", "delete"] },
+          },
+        },
+      ],
+      { fullDocument: "updateLookup" }
+    );
 
     changeStream.on("change", (change) => {
-      console.log("Transaction change detected:", change.operationType);
-      // FIXED: Send proper SSE format with more specific data
-      res.write(`data: transactions updated for ${userId}\n\n`);
+      console.log(
+        `SSE: Transaction change detected for user ${userId}:`,
+        change.operationType
+      );
+      res.write(
+        `data: ${JSON.stringify({
+          type: "transaction_update",
+          userId,
+          timestamp: new Date().toISOString(),
+        })}\n\n`
+      );
     });
 
     changeStream.on("error", (error) => {
-      console.error("Change stream error:", error);
-      res.write(`data: {"error": "Change stream error"}\n\n`);
+      console.error("SSE Change stream error:", error);
+      res.write(
+        `data: ${JSON.stringify({
+          type: "error",
+          message: "Change stream error",
+        })}\n\n`
+      );
     });
 
-    // FIXED: Handle connection close properly
-    req.on("close", () => {
-      console.log(`SSE connection closed for user: ${userId}`);
-      changeStream.close();
-    });
-
-    req.on("error", (error) => {
-      console.error("SSE request error:", error);
-      changeStream.close();
-    });
+    // Send heartbeat every 30 seconds
+    heartbeatInterval = setInterval(() => {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "heartbeat",
+          timestamp: new Date().toISOString(),
+        })}\n\n`
+      );
+    }, 30000);
   } catch (error) {
     console.error("SSE setup error:", error);
-    res.status(500).write(`data: {"error": "SSE setup failed"}\n\n`);
-    res.end();
+    res.write(
+      `data: ${JSON.stringify({
+        type: "error",
+        message: "SSE setup failed",
+      })}\n\n`
+    );
   }
+
+  // Handle client disconnect
+  req.on("close", () => {
+    console.log(`SSE connection closed for user: ${userId}`);
+    if (changeStream) {
+      changeStream.close();
+    }
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+    }
+  });
+
+  req.on("error", (error) => {
+    console.error("SSE request error:", error);
+    if (changeStream) {
+      changeStream.close();
+    }
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+    }
+  });
 });
 
 // Get user's recurring transactions
@@ -810,7 +1199,7 @@ app.get("/api/recurring-transactions", authenticateToken, async (req, res) => {
   }
 });
 
-// Create new recurring transaction
+// Create new recurring transaction with enhanced validation
 app.post("/api/recurring-transactions", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -822,36 +1211,70 @@ app.post("/api/recurring-transactions", authenticateToken, async (req, res) => {
       frequency,
       startDate,
       endDate,
+      currency = "USD",
+      tags,
     } = req.body;
 
-    // Validation
+    // Enhanced validation
     if (
       !description ||
-      !amount ||
-      !type ||
-      !category ||
-      !frequency ||
-      !startDate
+      typeof description !== "string" ||
+      description.trim().length === 0
     ) {
-      return res
-        .status(400)
-        .json({ error: "All required fields must be provided" });
+      return res.status(400).json({ error: "Description is required" });
     }
 
-    const recurringId = crypto.randomUUID();
+    if (!amount || typeof amount !== "number" || amount <= 0) {
+      return res
+        .status(400)
+        .json({ error: "Valid amount greater than 0 is required" });
+    }
+
+    if (!type || !["income", "expense"].includes(type)) {
+      return res
+        .status(400)
+        .json({ error: "Type must be 'income' or 'expense'" });
+    }
+
+    if (
+      !category ||
+      typeof category !== "string" ||
+      category.trim().length === 0
+    ) {
+      return res.status(400).json({ error: "Category is required" });
+    }
+
+    if (
+      !frequency ||
+      !["daily", "weekly", "monthly", "yearly"].includes(frequency)
+    ) {
+      return res.status(400).json({ error: "Invalid frequency" });
+    }
+
+    if (!startDate) {
+      return res.status(400).json({ error: "Start date is required" });
+    }
+
+    if (!SUPPORTED_CURRENCIES.includes(currency)) {
+      return res.status(400).json({ error: "Unsupported currency" });
+    }
+
+    const recurringId = randomUUID();
     const nextDueDate = calculateNextDueDate(new Date(startDate), frequency);
 
     const recurringTransaction = new RecurringTransaction({
       userId,
       recurringId,
-      description,
+      description: description.trim(),
       amount,
       type,
-      category,
+      category: category.trim(),
       frequency,
       startDate: new Date(startDate),
       endDate: endDate ? new Date(endDate) : null,
       nextDueDate,
+      currency,
+      tags: tags || [],
     });
 
     await recurringTransaction.save();
@@ -862,6 +1285,9 @@ app.post("/api/recurring-transactions", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating recurring transaction:", error);
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: "Failed to create recurring transaction" });
   }
 });
@@ -875,6 +1301,52 @@ app.put(
       const userId = req.user.userId;
       const { recurringId } = req.params;
       const updates = req.body;
+
+      // Validate currency if provided
+      if (
+        updates.currency &&
+        !SUPPORTED_CURRENCIES.includes(updates.currency)
+      ) {
+        return res.status(400).json({ error: "Unsupported currency" });
+      }
+
+      // Validate frequency if provided
+      if (
+        updates.frequency &&
+        !["daily", "weekly", "monthly", "yearly"].includes(updates.frequency)
+      ) {
+        return res.status(400).json({ error: "Invalid frequency" });
+      }
+
+      // Validate type if provided
+      if (updates.type && !["income", "expense"].includes(updates.type)) {
+        return res
+          .status(400)
+          .json({ error: "Type must be 'income' or 'expense'" });
+      }
+
+      // Validate amount if provided
+      if (
+        updates.amount &&
+        (typeof updates.amount !== "number" || updates.amount <= 0)
+      ) {
+        return res.status(400).json({ error: "Amount must be greater than 0" });
+      }
+
+      // If frequency or start date changes, recalculate next due date
+      if (updates.frequency || updates.startDate) {
+        const existing = await RecurringTransaction.findOne({
+          userId,
+          recurringId,
+        });
+        if (existing) {
+          const frequency = updates.frequency || existing.frequency;
+          const startDate = updates.startDate
+            ? new Date(updates.startDate)
+            : existing.startDate;
+          updates.nextDueDate = calculateNextDueDate(startDate, frequency);
+        }
+      }
 
       const result = await RecurringTransaction.updateOne(
         { userId, recurringId },
@@ -890,6 +1362,9 @@ app.put(
       res.json({ message: "Recurring transaction updated successfully" });
     } catch (error) {
       console.error("Error updating recurring transaction:", error);
+      if (error.name === "ValidationError") {
+        return res.status(400).json({ error: error.message });
+      }
       res.status(500).json({ error: "Failed to update recurring transaction" });
     }
   }
@@ -903,6 +1378,12 @@ app.delete(
     try {
       const userId = req.user.userId;
       const { recurringId } = req.params;
+
+      if (!recurringId) {
+        return res
+          .status(400)
+          .json({ error: "Recurring transaction ID is required" });
+      }
 
       const result = await RecurringTransaction.updateOne(
         { userId, recurringId },
@@ -923,45 +1404,168 @@ app.delete(
   }
 );
 
-// Error handling middleware
+// Get supported currencies
+app.get("/api/currencies", (req, res) => {
+  const currencyData = SUPPORTED_CURRENCIES.map((code) => ({
+    code,
+    name: getCurrencyName(code),
+    symbol: getCurrencySymbol(code),
+  }));
+
+  res.json({ currencies: currencyData });
+});
+
+// Utility functions for currency information
+function getCurrencyName(code) {
+  const names = {
+    USD: "US Dollar",
+    EUR: "Euro",
+    GBP: "British Pound",
+    JPY: "Japanese Yen",
+    CAD: "Canadian Dollar",
+    AUD: "Australian Dollar",
+    CHF: "Swiss Franc",
+    CNY: "Chinese Yuan",
+    SEK: "Swedish Krona",
+    NOK: "Norwegian Krone",
+    DKK: "Danish Krone",
+  };
+  return names[code] || code;
+}
+
+function getCurrencySymbol(code) {
+  const symbols = {
+    USD: "$",
+    EUR: "€",
+    GBP: "£",
+    JPY: "¥",
+    CAD: "C",
+    AUD: "A",
+    CHF: "Fr",
+    CNY: "¥",
+    SEK: "kr",
+    NOK: "kr",
+    DKK: "kr",
+  };
+  return symbols[code] || code;
+}
+
+// Manual processing endpoint for recurring transactions (admin/debug)
+app.post(
+  "/api/admin/process-recurring",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      // Only allow in development or for admin users
+      if (process.env.NODE_ENV === "production") {
+        return res.status(403).json({ error: "Not available in production" });
+      }
+
+      const result = await processRecurringTransactions();
+      res.json({ message: "Recurring transactions processed", result });
+    } catch (error) {
+      console.error("Error processing recurring transactions:", error);
+      res
+        .status(500)
+        .json({ error: "Failed to process recurring transactions" });
+    }
+  }
+);
+
+// Enhanced error handling middleware
 app.use((error, req, res, next) => {
   console.error("Unhandled error:", error);
-  res.status(500).json({ error: "Internal server error" });
+
+  // Don't send error details in production
+  const isDevelopment = process.env.NODE_ENV !== "production";
+
+  res.status(error.status || 500).json({
+    error: isDevelopment ? error.message : "Internal server error",
+    ...(isDevelopment && { stack: error.stack }),
+  });
 });
 
-// 404 handler
+// Enhanced 404 handler with better fallback
 app.use((req, res) => {
-  try {
-    fs.accessSync("dist/index.html", fs.constants.R_OK);
-    res.sendFile("dist/index.html");
-  } catch {
-    res.redirect(`http://localhost:5173${req.originalUrl}`);
+  // API routes that don't exist
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: "API endpoint not found" });
   }
+
+  // Try to serve the React app
+  try {
+    const path = require("path");
+    const indexPath = path.resolve(__dirname, "dist/index.html");
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath);
+    }
+  } catch (error) {
+    console.error("Error serving index.html:", error);
+  }
+
+  // Development fallback - redirect to Vite dev server
+  if (process.env.NODE_ENV !== "production") {
+    return res.redirect(`http://localhost:5173${req.originalUrl}`);
+  }
+
+  // Production fallback
+  res.status(404).json({ error: "Page not found" });
 });
 
-// Graceful shutdown
+// Graceful shutdown with cleanup
 process.on("SIGINT", async () => {
-  console.log("\nShutting down gracefully...");
+  console.log("\n🔄 Shutting down gracefully...");
+
   try {
+    // Stop agenda jobs
+    if (agenda) {
+      await agenda.stop();
+      console.log("✅ Agenda stopped successfully");
+    }
+
+    // Close MongoDB connection
     await mongoose.connection.close();
-    console.log("MongoDB connection closed.");
+    console.log("✅ MongoDB connection closed");
+
+    console.log("✅ Graceful shutdown completed");
   } catch (error) {
-    console.error("Error closing MongoDB connection:", error);
+    console.error("❌ Error during shutdown:", error);
   }
-  try {
-    await agenda.stop();
-    console.log("Agenda stopped successfully");
-  } catch (err) {
-    console.error("Error stopping Agenda: ", err);
-  }
+
   process.exit(0);
 });
 
-// Start server
-app.listen(PORT, "0.0.0.0", () => {
+// Handle uncaught exceptions
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+  process.exit(1);
+});
+
+// Start server with enhanced error handling
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Finance Tracker API running on port ${PORT}`);
-  console.log(`🍃 MongoDB URI: ${MONGODB_URI}`);
+  console.log(
+    `🍃 MongoDB URI: ${MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, "//***:***@")}`
+  ); // Hide credentials in logs
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`💰 Supported currencies: ${SUPPORTED_CURRENCIES.join(", ")}`);
+});
+
+// Handle server errors
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use`);
+  } else {
+    console.error("❌ Server error:", error);
+  }
+  process.exit(1);
 });
 
 module.exports = app;

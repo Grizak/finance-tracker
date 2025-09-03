@@ -1,17 +1,17 @@
 const CACHE_NAME = "Finance-Tracker-Offline-Cache-v1";
-const HASH_STORAGE_KEY = 'file-hashes';
+const HASH_STORAGE_KEY = "file-hashes";
 
 // Files to cache initially
 const URLS_TO_CACHE = [
   "/index.html",
-  "/favicon.png", 
+  "/favicon.png",
   "/manifest.json",
   "/app.js",
   "/style.css",
 ];
 
 // Files to monitor for hash changes
-const MONITORED_FILES = ['/app.js', '/style.css'];
+const MONITORED_FILES = ["/app.js", "/style.css"];
 
 // Extract hash from file content
 function extractHash(content) {
@@ -33,9 +33,9 @@ async function getStoredHashes() {
 async function storeHashes(hashes) {
   const cache = await caches.open(CACHE_NAME);
   await cache.put(
-    HASH_STORAGE_KEY, 
+    HASH_STORAGE_KEY,
     new Response(JSON.stringify(hashes), {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { "Content-Type": "application/json" },
     })
   );
 }
@@ -50,16 +50,18 @@ async function checkForUpdates() {
     // Fetch and check each monitored file
     for (const file of MONITORED_FILES) {
       try {
-        const response = await fetch(file, { cache: 'no-cache' });
+        const response = await fetch(file, { cache: "no-cache" });
         const content = await response.text();
         const hash = extractHash(content);
-        
+
         if (hash) {
           currentHashes[file] = hash;
-          
+
           // Compare with stored hash
           if (storedHashes[file] !== hash) {
-            console.log(`Hash changed for ${file}: ${storedHashes[file]} -> ${hash}`);
+            console.log(
+              `Hash changed for ${file}: ${storedHashes[file]} -> ${hash}`
+            );
             hasUpdates = true;
           }
         }
@@ -69,15 +71,15 @@ async function checkForUpdates() {
     }
 
     if (hasUpdates) {
-      console.log('Files updated, clearing cache and recaching...');
+      console.log("Files updated, clearing cache and recaching...");
       await clearCache();
       await cacheFiles(); // Re-cache all files
       await storeHashes(currentHashes);
-      
+
       // Notify clients about the update
-      self.clients.matchAll().then(clients => {
-        clients.forEach(client => {
-          client.postMessage({ type: 'CACHE_UPDATED' });
+      self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => {
+          client.postMessage({ type: "CACHE_UPDATED" });
         });
       });
     } else {
@@ -87,7 +89,7 @@ async function checkForUpdates() {
 
     return hasUpdates;
   } catch (error) {
-    console.error('Error checking for updates:', error);
+    console.error("Error checking for updates:", error);
     return false;
   }
 }
@@ -102,7 +104,7 @@ async function cacheFiles() {
 async function clearCache() {
   const cache = await caches.open(CACHE_NAME);
   const requests = await cache.keys();
-  
+
   for (const request of requests) {
     if (!request.url.includes(HASH_STORAGE_KEY)) {
       await cache.delete(request);
@@ -114,7 +116,7 @@ async function clearCache() {
 self.addEventListener("install", (event) => {
   event.waitUntil(
     cacheFiles().then(() => {
-      console.log('Initial files cached');
+      console.log("Initial files cached");
     })
   );
   self.skipWaiting();
@@ -133,7 +135,7 @@ self.addEventListener("activate", (event) => {
         );
       }),
       // Check for updates on activation
-      checkForUpdates()
+      checkForUpdates(),
     ])
   );
   self.clients.claim();
@@ -147,26 +149,32 @@ self.addEventListener("fetch", (event) => {
         return cachedResponse;
       }
 
-      return fetch(event.request).then((response) => {
-        // Don't cache if response is not ok
-        if (!response || response.status !== 200 || response.type !== 'basic') {
+      return fetch(event.request)
+        .then((response) => {
+          // Don't cache if response is not ok
+          if (
+            !response ||
+            response.status !== 200 ||
+            response.type !== "basic"
+          ) {
+            return response;
+          }
+
+          // Clone the response to cache it
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+
           return response;
-        }
-
-        // Clone the response to cache it
-        const responseToCache = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
+        })
+        .catch(() => {
+          // Fallback to cached index.html for navigation requests
+          if (event.request.mode === "navigate") {
+            return caches.match("/index.html");
+          }
+          throw new Error("Network unavailable and no cache available");
         });
-
-        return response;
-      }).catch(() => {
-        // Fallback to cached index.html for navigation requests
-        if (event.request.mode === 'navigate') {
-          return caches.match("/index.html");
-        }
-        throw new Error('Network unavailable and no cache available');
-      });
     })
   );
 });
@@ -174,27 +182,26 @@ self.addEventListener("fetch", (event) => {
 // Periodic check for updates
 let updateCheckInterval;
 
-self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'START_UPDATE_CHECK') {
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "START_UPDATE_CHECK") {
     if (updateCheckInterval) {
       clearInterval(updateCheckInterval);
     }
-    
+
     updateCheckInterval = setInterval(async () => {
       await checkForUpdates();
     }, 10 * 60 * 1000); // 10 minutes
-    
-  } else if (event.data && event.data.type === 'STOP_UPDATE_CHECK') {
+  } else if (event.data && event.data.type === "STOP_UPDATE_CHECK") {
     if (updateCheckInterval) {
       clearInterval(updateCheckInterval);
       updateCheckInterval = null;
     }
-  } else if (event.data && event.data.type === 'FORCE_UPDATE_CHECK') {
+  } else if (event.data && event.data.type === "FORCE_UPDATE_CHECK") {
     checkForUpdates();
   }
 });
 
 // Check for updates when coming back online
-self.addEventListener('online', () => {
+self.addEventListener("online", () => {
   checkForUpdates();
 });

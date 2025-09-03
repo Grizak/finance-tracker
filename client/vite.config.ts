@@ -11,7 +11,7 @@ export default defineConfig({
     react(),
     {
       name: "file-hash",
-      generateBundle(outputOptions, bundle) {
+      generateBundle(_outputOptions, bundle) {
         Object.keys(bundle).forEach((fileName) => {
           const chunk = bundle[fileName];
 
@@ -25,7 +25,7 @@ export default defineConfig({
             .substring(0, 16); // Use first 16 chars for readability
 
           // Prepend hash comment to the file
-          const hashComment = `/* HASH:${hash} */\n`;
+          const hashComment = `/* HASH:${hash} */`;
           chunk.code = hashComment + chunk.code;
         });
       },
@@ -36,6 +36,10 @@ export default defineConfig({
         const swFile = "../server/dist/sw.js";
         if (fs.existsSync(swFile)) {
           const { code } = await minify(fs.readFileSync(swFile, "utf8"));
+          if (!code) {
+            console.log("The code variable is undefined");
+            return;
+          }
           fs.writeFileSync(swFile, code, "utf8");
           console.log("✅ Minified sw.js");
         }

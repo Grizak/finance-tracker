@@ -3,11 +3,11 @@
     "concurrently": "^9.2.1"
   },
   "scripts": {
-    "postinstall": "concurrently \"cd server && pnpm i\" \"cd frontend && pnpm i\"",
-    "dev": "concurrently \"cd server && pnpm dev\" \"cd frontend && pnpm dev\"",
+    "postinstall": "concurrently \"cd server && pnpm i\" \"cd client && pnpm i\"",
+    "dev": "concurrently \"cd server && pnpm dev\" \"cd client && pnpm dev\"",
     "start": "cd server && pnpm start",
-    "build:frontend": "cd frontend && pnpm build",
-    "build": "pnpm build:frontend",
+    "build:client": "cd client && pnpm build",
+    "build": "pnpm build:client",
     "build:backend": "cd server && pnpm build"
   },
   "packageManager": "pnpm@10.15.0"
